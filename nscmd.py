@@ -1,6 +1,7 @@
 import sys
 import random
 import inspect
+import readline
 from datetime import datetime
 import logging
 
@@ -30,9 +31,10 @@ PROMPT = '\n\033[%s;%sm└─▪\033[0m' % (
 )
 
 # Delimeters
-CMD_DELIM   = " "
-LINE_DELIM  = "\n"
-NS_DELIM    = "."
+CMD_DELIM       = " "
+LINE_DELIM      = "\n"
+NS_DELIM        = "."
+COMPLETE_KEY    = "tab"
 
 # Logging
 LOG_LEVEL   = logging.INFO
@@ -56,6 +58,7 @@ class MainInterpreter:
     namespace       = name
     prefix_cmd      = "do_"
     prefix_help     = "help_"
+    prefix_complete = "complete_"
     global_cmds     = ['quit','exit','help']
     log             = logging.getLogger(namespace)
 
@@ -65,7 +68,7 @@ class MainInterpreter:
         Acts as the main or root namespace for the nscmd TUI.
 
         @param cmd_in: An optional initialization parameter specifying where to read
-                      commands from. Defaults to sys.stdin.
+                      commands from. Defaults to input().
         @param cmd_out: An optional initialization parameter specifying where to write
                        the output of commands to. Multiple methods can be specified.
                        Defaults to sys.stdout.
@@ -100,7 +103,6 @@ class MainInterpreter:
         cmds = None
 
         if cmd_in is None:
-            # default to sys.stdin
             method_in = METHOD_STD
 
         elif type(cmd_in) == str:
@@ -122,7 +124,7 @@ class MainInterpreter:
             method_in = METHOD_LIST
 
         else:
-            self.log.error(f"Unsupported command input type: {type(cmd_in)}, defaulting to sys.stdin")
+            self.log.error(f"Unsupported command input type: {type(cmd_in)}, defaulting to METHOD_STD")
             method_in = METHOD_STD
 
         if cmds is not None:
@@ -169,19 +171,20 @@ class MainInterpreter:
         return (method_out, output_tgt, outfile)
 
 
-    def __cmd_read(self):
+    def __cmd_read(self, prompt=False):
         """
         Read one command from the predetermined command input.
         
         @global inqueue: The input queue built on startup of the interpreter, used for automated input
+        @param prompt: Whether or not to include a prompt with input()
         @return: A string representing a single user command or None if no command entered (empty line)
         """
         global inqueue
-        
+        ns, obj = NS_STATE
         self.log.debug(f"Popping command from inqueue: {inqueue}")
         
         if METHOD_STD & self.method_in:
-            return sys.stdin.readline().strip()
+            return input(ns + PROMPT)
 
         else:
             if inqueue == []:
@@ -306,6 +309,76 @@ class MainInterpreter:
         return None
 
 
+    def default_complete(self, text):
+        """
+        Default behavior for command completion.
+
+        @return: Empty list
+        """
+        return []
+
+
+    def __complete_options(self, text, state):
+        """
+        Function used by the 'readline' library to complete the command input.
+        This is built specifically for completion with namespaces as well
+        as the methods within the namespace the typed command would be at if
+        the namespace was changed to it with __set_namespace.
+
+        @param text: a string representing the input text needing completion
+        @param state: the offset from the 'readline' begidx the 'text' param is at
+        @return: A List object of potential completions given the current text & state
+        """
+        if self.nsmap is None or self.nsmap == {}:
+            return []
+
+        # try to see if we are in a namespace based on the entered text
+        lb = readline.get_line_buffer().lstrip()
+        search_ns, obj, args = self.__check_namespace(lb.split(CMD_DELIM))
+
+        # we always want main to be an option if it's the start of the line
+        begidx = readline.get_begidx()
+        main = []
+        if begidx == 0 and MainInterpreter.name[:len(text)] == text:
+            main = [MainInterpreter.name]
+
+        funcs = []
+        if args != []:
+            obj_methods = dir(self.nsmap[search_ns].__class__)
+            funcname = self.prefix_cmd + text
+            funcs = [func[len(self.prefix_cmd):] for func in obj_methods if func.startswith(funcname)]
+
+        subs = set()
+        search_ns_len = len(search_ns)
+        for ns in self.nsmap.keys():
+            if ns[0:search_ns_len] == search_ns:
+                sub = ns[search_ns_len+len(NS_DELIM):]
+                if sub[:len(text)] == text:
+                    subs.add(ns[search_ns_len+len(NS_DELIM):].split(NS_DELIM)[0])
+        subs = list(subs)
+        self.log.debug(f"subs: {subs}")
+        self.log.debug(f"funcs: {funcs}")
+        return main + subs + funcs
+
+
+    def __complete(self, text, state):
+        """
+        Returns the next possible command based off of the 'text' parameter.
+
+        @param text: Current input text
+        @param state: Completer state
+        @return: Current state index if something found, otherwise none
+        """
+        line = readline.get_line_buffer().lstrip()
+
+        self.completion_matches = self.__complete_options(text, state)
+        self.log.debug(f"completion_matches: {self.completion_matches}")
+        try:
+            return self.completion_matches[state]
+        except IndexError:
+            return None
+
+
     def __check_namespace(self, parts):
         """
         This function searches the current namespace followed by the main (root)
@@ -358,7 +431,7 @@ class MainInterpreter:
         for proper execution context.
 
         @global NS_STATE: The namespace state Tuple, which this function will alter
-        @param cmd: A List object containing the user input command
+        @param parts: A List object containing the user input command
         @return: A List object containing remaining arguments
                 after the namespace has been parsed
         """
@@ -432,22 +505,26 @@ class MainInterpreter:
         """Print the banner to sys.stdout"""
         sys.stdout.write(BANNER)
 
-    def __print_prompt(self):
-        """Print the prompt to sys.stdout"""
-        ns, obj = NS_STATE
-        sys.stdout.write(ns + PROMPT)
 
     def run(self, prompt=False):
+        """
+        Handles the input, execute, output loop.
+
+        @param prompt: A boolean which, if true, prints the prompt each loop.
+        @return: None
+        """
+
+        # set complete function
+        readline.parse_and_bind(f"{COMPLETE_KEY}: complete")
+        readline.set_completer(self.__complete)
+
         data_in = ""
         while data_in != None:
             self.log.debug(f"Running in context of {self}")
 
-            if prompt:
-                self.__print_prompt()
-
             try:
                 # handle input
-                data_in = self.__cmd_read()
+                data_in = self.__cmd_read(prompt=prompt)
                 if data_in == None:
                     break
 
@@ -462,6 +539,11 @@ class MainInterpreter:
                 data_in = None
 
     def tui(self):
+        """
+        Prints the banner and sets the prompt boolean for run().
+
+        @return: None
+        """
         self.__banner()
         self.run(prompt=True)
 
