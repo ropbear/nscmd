@@ -1,3 +1,4 @@
+import os
 import sys
 import random
 import inspect
@@ -59,8 +60,8 @@ class MainInterpreter:
     prefix_cmd      = "do_"
     prefix_help     = "help_"
     prefix_complete = "complete_"
-    global_cmds     = ['quit','exit','help']
     log             = logging.getLogger(namespace)
+
 
     def __init__(self, cmd_in=None, cmd_out=None, outfile=None):
         """
@@ -547,6 +548,17 @@ class MainInterpreter:
         self.__banner()
         self.run(prompt=True)
 
+    def do_quit(self, args):
+        """Global command to quit program"""
+        sys.exit(0)
+    
+    def do_exit(self, args):
+        """Global command to exit program"""
+        self.do_quit(args)
+
+    def do_clear(self, args):
+        """Global command to clear terminal"""
+        os.system("clear")
 
 class SubInterpreter(MainInterpreter):
     name            = None
