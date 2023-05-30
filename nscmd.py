@@ -5,6 +5,7 @@ import inspect
 import readline
 from datetime import datetime
 import logging
+from textwrap import wrap
 
 TITLE = __name__
 
@@ -37,6 +38,13 @@ LINE_DELIM      = "\n"
 NS_DELIM        = "."
 COMPLETE_KEY    = "tab"
 
+# Help output
+HELP_WIDTH      = 60
+HELP_CMD_DELIM  = "\t"
+HELP_BORDER_CHR = "#"
+HELP_TOPIC      = HELP_BORDER_CHR * 4 + " %s "
+HELP_END        = "\n\n"
+
 # Logging
 LOG_LEVEL   = logging.INFO
 logging.basicConfig(level=LOG_LEVEL)
@@ -53,15 +61,15 @@ outqueue = []
 
 # global namespace state, the focal point of this library
 NS_STATE = ('', None) # (ns, obj)
+NS_MAP = {}
 
 class MainInterpreter:
     name            = 'main'
     namespace       = name
     prefix_cmd      = "do_"
     prefix_help     = "help_"
-    prefix_complete = "complete_"
     log             = logging.getLogger(namespace)
-
+    global_cmds     = ['quit','exit','help','clear']
 
     def __init__(self, cmd_in=None, cmd_out=None, outfile=None):
         """
@@ -85,11 +93,11 @@ class MainInterpreter:
         # choose the method of output based on the type of 'cmd_out' 
         self.method_out, self.outstr, self.outfile = self.__choose_method_out(cmd_out, outfile)
 
-        # default NS_STATE to the main namespace
-        global NS_STATE
+        # default NS_STATE to the main namespace, init NS_MAP globally
+        global NS_STATE, NS_MAP
         NS_STATE = (MainInterpreter.namespace, self)
-        self.nsmap = self.__init_namespaces()
-        self.log.debug(f"Namespace Map: {self.nsmap}")
+        NS_MAP = self.__init_namespaces()
+        self.log.debug(f"Namespace Map: {NS_MAP}")
 
 
     def __choose_method_in(self, cmd_in):
@@ -292,6 +300,27 @@ class MainInterpreter:
         return nsmap
 
 
+    def __get_subs_of_ns(self, search_ns, depth=None):
+        subs = []
+        search_ns_len = len(search_ns)
+        for ns in NS_MAP.keys():
+            if ns[0:search_ns_len] == search_ns:
+                branch = ns[search_ns_len+len(NS_DELIM):]
+                depths = branch.split(NS_DELIM)
+                if depth is not None and type(depth) == int:
+                    subs.append(NS_DELIM.join(depths[0:depth]))
+                else:
+                    subs.append(NS_DELIM.join(depths))
+        return set(subs)
+
+    def __get_cmds_of_ns(self, search_ns):
+        obj_methods = dir(NS_MAP[search_ns].__class__)
+        funcs = []
+        for func in obj_methods:
+            if func[0:len(self.prefix_cmd)] == self.prefix_cmd:
+                funcs.append(func[len(self.prefix_cmd):])
+        return funcs
+
     def empty(self):
         """
         Handler for empty user input command
@@ -330,7 +359,7 @@ class MainInterpreter:
         @param state: the offset from the 'readline' begidx the 'text' param is at
         @return: A List object of potential completions given the current text & state
         """
-        if self.nsmap is None or self.nsmap == {}:
+        if NS_MAP is None or NS_MAP == {}:
             return []
 
         # try to see if we are in a namespace based on the entered text
@@ -345,20 +374,17 @@ class MainInterpreter:
 
         funcs = []
         if args != []:
-            obj_methods = dir(self.nsmap[search_ns].__class__)
             funcname = self.prefix_cmd + text
-            funcs = [func[len(self.prefix_cmd):] for func in obj_methods if func.startswith(funcname)]
-
+            all_funcs = self.__get_cmds_of_ns(search_ns)
+            funcs = [func for func in all_funcs if func.startswith(funcname)]
+                    
         subs = set()
-        search_ns_len = len(search_ns)
-        for ns in self.nsmap.keys():
-            if ns[0:search_ns_len] == search_ns:
-                sub = ns[search_ns_len+len(NS_DELIM):]
-                if sub[:len(text)] == text:
-                    subs.add(ns[search_ns_len+len(NS_DELIM):].split(NS_DELIM)[0])
-        subs = list(subs)
+        for sub in self.__get_subs_of_ns(search_ns):
+            if sub[:len(text)] == text:
+                subs.add(ns[search_ns_len+len(NS_DELIM):].split(NS_DELIM)[0])
         self.log.debug(f"subs: {subs}")
         self.log.debug(f"funcs: {funcs}")
+
         return main + subs + funcs
 
 
@@ -401,7 +427,7 @@ class MainInterpreter:
             test_ns = NS_DELIM.join(parts[0:i+1])
             tmp_ns = current_ns + NS_DELIM + test_ns
             self.log.debug(f"Current ns search: tmp_ns = {tmp_ns}")
-            if tmp_ns in self.nsmap.keys():
+            if tmp_ns in NS_MAP.keys():
                 last_valid = tmp_ns
                 args = parts[i+1:]
             else:
@@ -412,7 +438,7 @@ class MainInterpreter:
             for i in range(len(parts)):
                 test_ns = NS_DELIM.join(parts[0:i+1])
                 self.log.debug(f"Root ns search: test_ns = {test_ns}")
-                if test_ns in self.nsmap.keys():
+                if test_ns in NS_MAP.keys():
                     last_valid = test_ns
                     args = parts[i+1:]
                 else:
@@ -423,7 +449,7 @@ class MainInterpreter:
             args = parts[i:]
             return (NS_STATE[0], NS_STATE[1], args)
         
-        return (last_valid, self.nsmap[last_valid], args)
+        return (last_valid, NS_MAP[last_valid], args)
 
 
     def __set_namespace(self, parts):
@@ -446,20 +472,23 @@ class MainInterpreter:
         return parts   
 
 
-    def __exec(self, cmd, args):
+    def __exec(self, cmd, args, prefix=None):
         """
         Executes a method of the class based off the user input command
         and the prefix_cmd string.
 
         @param cmd: A string of the command to execute.
         @param args: A List object containing the command args, split on CMD_DELIM
+        @param prefix: Used when passing a special prefix such as 'help_'
         @return: The result of the called function
         """
+        prefix = self.prefix_cmd if prefix is None else prefix
         try:
-            self.log.debug(f"Attempting getattr on {self} for {self.prefix_cmd + cmd}")
-            func = getattr(self, self.prefix_cmd + cmd)
+            self.log.debug(f"Attempting getattr on {self} for {prefix + cmd}")
+            func = getattr(self, prefix + cmd)
         except AttributeError:
-            return self.default(cmd, args)
+            # only return default for prefix_cmd
+            return self.default(cmd, args) if prefix is None else None
         return func(args)
 
 
@@ -474,14 +503,12 @@ class MainInterpreter:
         """
         global NS_STATE
 
-        parts = data.split(CMD_DELIM)
+        parts = [part.strip() for part in data.split(CMD_DELIM)]
+        if '' in parts:
+            parts.remove('')
         self.log.debug(f"Split command: {parts}")
 
         if parts == []:
-            self.log.error("Unexpected empty split command")
-            return None
-
-        elif len(parts) == 1 and parts[0] == '':
             return self.empty()
 
         self.log.debug(f"Pre-exec NS_STATE: {NS_STATE}")
@@ -492,7 +519,8 @@ class MainInterpreter:
         if remaining_parts != []:
             # if arguments were passed, exec in new namespace
             # and then return to the original state
-            result = NS_STATE[1].__exec(remaining_parts[0], remaining_parts[1:])
+            args = remaining_parts[1:] if len(remaining_parts) > 1 else []
+            result = NS_STATE[1].__exec(remaining_parts[0], args)
             NS_STATE = saved_ns_state
         else:
             # if there were no arguments passed, remain in the new namespace
@@ -548,6 +576,82 @@ class MainInterpreter:
         self.__banner()
         self.run(prompt=True)
 
+    def default_help(self):
+
+        def wrap_cmds(cmds):
+            helpstr = ''
+
+            if cmds == []:
+                return helpstr
+
+            idx = -1
+            newlen = len(cmds[0])
+            while idx < len(cmds):
+                if newlen < HELP_WIDTH:
+                    idx += 1
+                    helpstr += cmds[idx] + HELP_CMD_DELIM
+                    if (idx + 1) < len(cmds):
+                        newlen += len(cmds[idx + 1] + HELP_CMD_DELIM)
+                    else:
+                        # no more commands
+                        break
+                else:
+                    helpstr += " "*(HELP_WIDTH-len(helpstr)) + "\n"
+                    if (idx + 1) < len(cmds):
+                        newlen = len(cmds[idx + 1] + HELP_CMD_DELIM)
+                    else:
+                        # no more commands
+                        break
+            return helpstr
+
+        # global commands first
+        topic = "Global Commands"
+        helpstr_global = (HELP_TOPIC % topic)
+        helpstr_global += HELP_BORDER_CHR*(HELP_WIDTH - len(helpstr_global)) +"\n"
+        helpstr_global += "\n".join(wrap(HELP_CMD_DELIM.join(self.global_cmds), width=HELP_WIDTH)) + "\n"
+        
+        # sub-namespaces of current namespace
+        subs = list(self.__get_subs_of_ns(NS_STATE[0], depth=1))
+        subs.remove('')
+        topic = "Sub-namespaces"
+        helpstr_subs = (HELP_TOPIC % topic)
+        helpstr_subs += HELP_BORDER_CHR*(HELP_WIDTH - len(helpstr_subs)) +"\n"
+        helpstr_subs += "\n".join(wrap(HELP_CMD_DELIM.join(subs), width=HELP_WIDTH)) + "\n"
+
+        # commands in current namespace
+        funcs = self.__get_cmds_of_ns(NS_STATE[0])
+        [funcs.remove(x) for x in self.global_cmds]
+        topic = "Current Namespace Commands"
+        helpstr_cmds = (HELP_TOPIC % topic)
+        helpstr_cmds += HELP_BORDER_CHR*(HELP_WIDTH - len(helpstr_cmds)) +"\n"
+        helpstr_cmds += "\n".join(wrap(HELP_CMD_DELIM.join(funcs), width=HELP_WIDTH)) + "\n"
+
+        helpstr = helpstr_global + helpstr_subs + helpstr_cmds + HELP_END
+        self.__cmd_output(helpstr)
+
+
+    def do_help(self, args):
+        if args != []:
+            arg = args[0]
+        else:
+            return NS_MAP[MainInterpreter.namespace].default_help()
+
+        notfound = "No help available for %s"
+        
+        # attempt to execute with prefix_help
+        result = self.__exec(arg, [], prefix=self.prefix_help)
+        self.log.debug(f"self.__exec() returned {result}")
+
+        # otherwise use docstring, print an error if bogus help target
+        if result is None:
+            try:
+                # search for command docstring
+                docstr = getattr(self, self.prefix_cmd + arg).__doc__
+                if docstr is not None:
+                    NS_MAP[MainInterpreter.namespace].__cmd_output(docstr)
+            except AttributeError:
+                NS_MAP[MainInterpreter.namespace].__cmd_output(notfound % arg)
+
     def do_quit(self, args):
         """Global command to quit program"""
         sys.exit(0)
@@ -559,6 +663,7 @@ class MainInterpreter:
     def do_clear(self, args):
         """Global command to clear terminal"""
         os.system("clear")
+
 
 class SubInterpreter(MainInterpreter):
     name            = None
