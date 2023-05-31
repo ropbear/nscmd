@@ -1,35 +1,3 @@
-# nscmd
-
-A terminal user interface (TUI) Python library utilizing inheritance to create namespaces for command execution. The project stemmed from a large refactoring of the cmd library, and eventually led to building an entirely separate library for the sake of design and code cleanliness.
-
-This library currently is only targeted at GNU/Linux platforms due to its use of the readline library for several major features.
-
-## Features
-
-- Namespaces
-- Built-in help via docstrings
-- Command history
-- Tab complete
-- Clear terminal
-- Multi-file interpreter
-
-# Example
-
-In a file called `bar.py`:
-
-```python
-from foo import FooInterpreter
-
-class BarInterpreter(FooInterpreter):
-    name        = 'bar'
-
-    def do_helloworld(self, args):
-        return "Hello, bar!"
-```
-
-In a file called `foo.py`:
-
-```python
 import nscmd
 
 class FooInterpreter(nscmd.SubInterpreter):
@@ -73,5 +41,3 @@ if __name__ == "__main__":
     # no matter what method you use, you can still access
     # the output as a list. It resets on each instantiation.
     print(nscmd.outqueue)
-
-```
