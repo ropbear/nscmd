@@ -1,3 +1,14 @@
+"""
+This library is loosely based off of the 'cmd' library. It started
+after I found myself trying to hack namespaces into cmd.py and causing
+a lot more code bloat than what was really necessary.
+
+You can find the original cmd library here:
+https://github.com/python/cpython/blob/main/Lib/cmd.py
+
+- ropbear
+"""
+
 import os
 import sys
 import random
@@ -59,7 +70,7 @@ METHOD_LIST     = 8
 inqueue = []
 outqueue = []
 
-# global namespace state, the focal point of this library
+# global namespace state and map, the focal points of this library
 NS_STATE = ('', None) # (ns, obj)
 NS_MAP = {}
 
@@ -70,6 +81,13 @@ class MainInterpreter:
     prefix_help     = "help_"
     log             = logging.getLogger(namespace)
     global_cmds     = ['quit','exit','help','clear']
+
+    def __clear_globals(self):
+        """Clear critical global variables"""
+        global inqueue, outqueue, NS_STATE, NS_MAP
+        inqueue = outqueue = []
+        NS_STATE = ('', None)
+        NS_MAP = {}
 
     def __init__(self, cmd_in=None, cmd_out=None, outfile=None):
         """
@@ -85,6 +103,7 @@ class MainInterpreter:
                        append the output of commands to.
         @return: Initialized MainInterpreter object
         """
+        self.__clear_globals()
         global inqueue, outqueue
         
         # choose the method of input based on the type of 'cmd_in'
@@ -118,12 +137,12 @@ class MainInterpreter:
             # a str can either be a file path or string of commands
             if os.path.exists(cmd_in):
                 self.log.info(f"Reading commands from file '{cmd_in}'")
-                with open(cmdfile,"r") as f:
+                with open(cmd_in,"r") as f:
                     lines = f.readlines()
                 cmds = [l.strip() for l in lines]
                 method_in = METHOD_FILE
             else:
-                self.log.warning(f"No path '{cmd_in}' found, assuming command input string")
+                self.log.warning(f"No path found, assuming command input string")
                 cmds = [l.strip() for l in cmd_in.split(LINE_DELIM)]
                 method_in = METHOD_STR
 
@@ -170,7 +189,7 @@ class MainInterpreter:
             self.log.error(f"Unsupported command output type: {type(cmd_out)}, defaulting to sys.stdout")
             method_out = METHOD_STD
 
-        if outfile is not None and os.path.exists(outfile):
+        if outfile is not None:
             if method_out is None:
                 method_out = METHOD_FILE
             else:
@@ -301,6 +320,13 @@ class MainInterpreter:
 
 
     def __get_subs_of_ns(self, search_ns, depth=None):
+        """
+        Function to gather the sub-namespaces of a given namespace.
+
+        @param search_ns: the namespace to gather sub-namespaces from
+        @param (optional) depth: how generations of sub-namespaces to include
+        @return: A Set object of sub-namespaces in NS_DELIM notation
+        """
         subs = []
         search_ns_len = len(search_ns)
         for ns in NS_MAP.keys():
@@ -314,6 +340,14 @@ class MainInterpreter:
         return set(subs)
 
     def __get_cmds_of_ns(self, search_ns):
+        """
+        Function to gather all of the commands of a namespace
+        based on prefix_cmd
+
+        @param search_ns: the namespace to gather commands from
+        @return: A List object of functions that match the 
+                prefix_cmd + cmd format.
+        """
         obj_methods = dir(NS_MAP[search_ns].__class__)
         funcs = []
         for func in obj_methods:
@@ -577,32 +611,11 @@ class MainInterpreter:
         self.run(prompt=True)
 
     def default_help(self):
+        """
+        Function to handle the 'help' command with no input.
 
-        def wrap_cmds(cmds):
-            helpstr = ''
-
-            if cmds == []:
-                return helpstr
-
-            idx = -1
-            newlen = len(cmds[0])
-            while idx < len(cmds):
-                if newlen < HELP_WIDTH:
-                    idx += 1
-                    helpstr += cmds[idx] + HELP_CMD_DELIM
-                    if (idx + 1) < len(cmds):
-                        newlen += len(cmds[idx + 1] + HELP_CMD_DELIM)
-                    else:
-                        # no more commands
-                        break
-                else:
-                    helpstr += " "*(HELP_WIDTH-len(helpstr)) + "\n"
-                    if (idx + 1) < len(cmds):
-                        newlen = len(cmds[idx + 1] + HELP_CMD_DELIM)
-                    else:
-                        # no more commands
-                        break
-            return helpstr
+        @return: None
+        """
 
         # global commands first
         topic = "Global Commands"
@@ -631,6 +644,18 @@ class MainInterpreter:
 
 
     def do_help(self, args):
+        """
+        Global help command. This will attempt to execute a 'help' command
+        in the current namespace via the 'prefix_help' notation. If you write
+        your own help function, you MUST return something other than None in
+        order to skip the search for a docstring and other default behavior.
+
+        This function utilizes NS_MAP[MainInterpreter.namespace] to ensure
+        the correct functions are executed for default behavior and output.
+
+        @param args: A List object of the arguments passed to the help command
+        @return: None
+        """
         if args != []:
             arg = args[0]
         else:
